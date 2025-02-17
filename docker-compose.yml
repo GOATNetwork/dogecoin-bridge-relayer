@@ -1,0 +1,54 @@
+services:
+  nudex-voter-1:
+    build: .
+    image: nuvosphere/nudex-voter:latest
+    container_name: nudex-voter-1
+    env_file:
+      - .env1
+    ports:
+      - "8080:8080"
+      - "4001:4001"
+    volumes:
+      - ./data/db1:/app/db
+    networks:
+      nudex-network:
+        ipv4_address: 192.168.100.2
+
+  nudex-voter-2:
+    image: nuvosphere/nudex-voter:latest
+    container_name: nudex-voter-2
+    env_file:
+      - .env2
+    environment:
+      - LIBP2P_BOOT_NODES=/ip4/192.168.100.2/tcp/4001/p2p/12D3KooWH3iZegCM3dYC46BgahT9VXVNn89sX5GKwmj8rwPPzjRz
+    ports:
+      - "8180:8080"
+      - "4101:4001"
+    volumes:
+      - ./data/db2:/app/db
+    networks:
+      nudex-network:
+        ipv4_address: 192.168.100.3
+
+  nudex-voter-3:
+    image: nuvosphere/nudex-voter:latest
+    container_name: nudex-voter-3
+    env_file:
+      - .env3
+    environment:
+      - LIBP2P_BOOT_NODES=/ip4/192.168.100.3/tcp/4001/p2p/12D3KooWMiaYtZ56PMmXtVhngYNwGM9Le27pEun8x1DbdgEzUdpk
+    ports:
+      - "8280:8080"
+      - "4201:4001"
+    volumes:
+      - ./data/db3:/app/db
+    networks:
+      nudex-network:
+        ipv4_address: 192.168.100.4
+
+networks:
+  nudex-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.100.0/24
