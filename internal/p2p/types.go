@@ -13,16 +13,15 @@ type HeartbeatMessage struct {
 	Timestamp int64  `json:"ts"`
 }
 
-type HandshakeMessage struct {
-	PeerID    string `json:"peer_id"`
-	Submitter string `json:"submitter"`
-	Handshake string `json:"handshake"`
-	Timestamp int64  `json:"ts"`
-}
-
 type MessageType int
 
 const (
-	MessageTypeUnknown = iota
-	MessageTypeTssMsg
+	MessageTypeUnknown MessageType = iota
+	MessageTypeSigReq
+	MessageTypeSigResp
+	MessageTypeDepositReceive
+	MessageTypeWithdrawFinalize
+	MessageTypeSendOrderBroadcasted
+	MessageTypeNewVoter
+	MessageTypeSafeboxTask
 )

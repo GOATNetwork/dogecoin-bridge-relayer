@@ -1,223 +1,186 @@
 package config
 
 import (
-	"crypto/ecdsa"
-	"encoding/hex"
-	"errors"
+	"log"
 	"math/big"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/mitchellh/mapstructure"
-	"github.com/nuvosphere/nudex-voter/internal/utils"
+	"github.com/goatnetwork/goat-relayer/internal/types"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 )
 
-type Config struct {
-	Env                 string          `validate:"required" yaml:"env"` // dev、test、prod
-	MasterChainId       uint64          `validate:"required" yaml:"master_chain_id"`
-	SubmitterPrivateKey string          `validate:"required" yaml:"submitter_private_key"`
-	DB                  DataBase        `validate:"required" yaml:"db"`
-	Log                 Log             `validate:"required" yaml:"log"`
-	Tss                 TssConfig       `validate:"required" yaml:"tss"`
-	P2P                 P2PConfig       `validate:"required" yaml:"p2p"`
-	Contract            ContractAddress `validate:"required" yaml:"contract"`
-	Chains              []Chain         `validate:"required" yaml:"chains"`
-}
+var AppConfig Config
 
-func (c *Config) IsEVM(chainId uint64) bool {
-	for _, chain := range c.Chains {
-		if chain.ChainId == chainId {
-			return chain.ChainType == 1 // todo
-		}
-	}
+func InitConfig() {
+	viper.AutomaticEnv()
 
-	return false
-}
+	// Default config
+	viper.SetDefault("HTTP_PORT", "8080")
+	viper.SetDefault("RPC_PORT", "50051")
+	viper.SetDefault("LIBP2P_PORT", 4001)
+	viper.SetDefault("LIBP2P_BOOT_NODES", "")
+	viper.SetDefault("BTC_RPC", "http://localhost:8332")
+	viper.SetDefault("BTC_RPC_USER", "")
+	viper.SetDefault("BTC_RPC_PASS", "")
+	viper.SetDefault("BTC_CONFIRMATIONS", 6)
+	viper.SetDefault("BTC_START_HEIGHT", 0)
+	viper.SetDefault("BTC_NETWORK_TYPE", "")
+	viper.SetDefault("BTC_MAX_NETWORK_FEE", 500)
+	viper.SetDefault("BTC_REINDEX_BLOCKS", "")
+	viper.SetDefault("GIGAWALLET_URL", "http://localhost:8080")
+	viper.SetDefault("GIGAWALLET_ACCOUNT_ID", "default")
+	viper.SetDefault("USE_GIGAWALLET", false)
+	viper.SetDefault("CONTRACT_TASK_MANAGER", "0x6827D591faDa19A1274Df0Ab2608901AaaEA14C9")
+	viper.SetDefault("L2_RPC", "http://localhost:8545")
+	viper.SetDefault("L2_JWT_SECRET", "")
+	viper.SetDefault("L2_CHAIN_ID", "2345")
+	viper.SetDefault("L2_START_HEIGHT", 0)
+	viper.SetDefault("L2_CONFIRMATIONS", 3)
+	viper.SetDefault("L2_MAX_BLOCK_RANGE", 500)
+	viper.SetDefault("L2_REQUEST_INTERVAL", "10s")
+	viper.SetDefault("L2_SUBMIT_RETRY", 10)
+	viper.SetDefault("TSS_ENDPOINT", "http://localhost:8080")
+	viper.SetDefault("ENABLE_WEBHOOK", true)
+	viper.SetDefault("ENABLE_RELAYER", true)
+	viper.SetDefault("LOG_LEVEL", "info")
+	viper.SetDefault("DB_DIR", "/app/db")
+	viper.SetDefault("VOTING_CONTRACT", "")
+	viper.SetDefault("WITHDRAW_CONTRACT", "")
+	viper.SetDefault("FIREBLOCKS_SECRET", "")
+	viper.SetDefault("FIREBLOCKS_CALLBACK_PRIVATE", "")
+	viper.SetDefault("FIREBLOCKS_CALLBACK_PUBLIC", "")
+	viper.SetDefault("FIREBLOCKS_API_KEY", "")
+	viper.SetDefault("GOATCHAIN_RPC_URI", "tcp://127.0.0.1:26657")
+	viper.SetDefault("GOATCHAIN_GRPC_URI", "127.0.0.1:9090")
+	viper.SetDefault("GOATCHAIN_ID", "goat")
+	viper.SetDefault("GOATCHAIN_ACCOUNT_PREFIX", "goat")
+	viper.SetDefault("GOATCHAIN_DENOM", "ugoat")
+	viper.SetDefault("RELAYER_PRIVATE_KEY", "")
+	viper.SetDefault("RELAYER_BLS_SK", "")
+	viper.SetDefault("BLS_SIG_TIMEOUT", "300s")
 
-type DataBase struct {
-	DbRootDir string `validate:"required" yaml:"db_root_dir"`
-}
-
-type Chain struct {
-	Network       string        `yaml:"network"` // devnet、testnet、mainnet
-	ChainId       uint64        `validate:"required"    yaml:"chain_id"`
-	ChainType     int           `validate:"required"    yaml:"chain_type"`
-	Rpc           Rpc           `validate:"required"    yaml:"rpc"`
-	StartHeight   int           `yaml:"start_height"`
-	Confirmations int           `yaml:"confirmations"`
-	MaxBlockRange int           `yaml:"max_block_range"`
-	ScanInterval  time.Duration `yaml:"scan_interval"`
-}
-
-type Rpc struct {
-	Url       string `validate:"required" yaml:"url"`
-	User      string `yaml:"user"`
-	Password  string `yaml:"password"`
-	JwtSecret string `yaml:"jwt_secret"`
-}
-
-func (c *Config) IsProd() bool {
-	return c.Env == "prod"
-}
-
-func (c *Config) IsMaster(chainId uint64) bool {
-	return c.MasterChainId == chainId
-}
-
-func (c *Config) MasterChainInfo() *Chain {
-	for _, chain := range c.Chains {
-		if chain.ChainId == c.MasterChainId {
-			return &chain
-		}
-	}
-
-	panic("master chain not found")
-}
-
-func (c *Config) Validator() {
-	master := c.MasterChainInfo()
-	if master.ChainType != 1 { // types.ChainEthereum {
-		panic("invalid master chain type")
-	}
-
-	if c.Contract.Voter == "" {
-		panic("missing config for contract voter address")
-	}
-}
-
-type Log struct {
-	Level string `yaml:"level"`
-}
-
-type P2PConfig struct {
-	Port      int      `yaml:"port"`
-	BootNodes []string `yaml:"boot_nodes"`
-}
-
-type TssConfig struct {
-	Threshold   int           `yaml:"threshold"`
-	SignTimeout time.Duration `yaml:"sign_timeout"`
-	PublicKeys  []string      `yaml:"public_keys"`
-}
-
-type ContractAddress struct {
-	Voter        string `yaml:"voter"`
-	Account      string `yaml:"account"`
-	TaskManager  string `yaml:"task_manager"`
-	Participant  string `yaml:"participant"`
-	Deposit      string `yaml:"deposit"`
-	AssetHandler string `yaml:"asset_handler"`
-}
-
-var (
-	AppConfig           Config
-	TssPublicKeys       []*ecdsa.PublicKey
-	SubmitterPrivateKey *ecdsa.PrivateKey
-	MasterChainId       *big.Int
-)
-
-func Submitter() common.Address {
-	return crypto.PubkeyToAddress(SubmitterPrivateKey.PublicKey)
-}
-
-func InitConfig(configPath string) {
-	// viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath(".")
-	viper.AddConfigPath("$HOME/.config")
-	viper.AddConfigPath("/etc")
-	viper.SetConfigFile(configPath)
-	logrus.Info("load yaml config")
-
-	err := viper.ReadInConfig()
-	utils.Assert(err)
-	err = viper.Unmarshal(
-		&AppConfig,
-		func(decoderConfig *mapstructure.DecoderConfig) { decoderConfig.TagName = "yaml" },
-	)
-	utils.Assert(err)
-
-	setL2ChainId(AppConfig.MasterChainId)
-	setTssPublicKeys(AppConfig.Tss.PublicKeys)
-
-	if len(AppConfig.SubmitterPrivateKey) > 0 {
-		setL2PrivateKey(AppConfig.SubmitterPrivateKey)
-	} else {
-		logrus.Info("load .env config")
-		viper.AutomaticEnv()
-		// viper.Debug()
-		viper.SetConfigType("env")
-		viper.AddConfigPath(".")
-
-		setL2PrivateKey(viper.GetString("SUBMITTER_PRIVATE_KEY"))
-	}
-
-	setLogLevel()
-}
-
-func setTssPublicKeys(tssList []string) {
-	tssPublicKeys, err := ParseECDSAPublicKeys(tssList)
+	logLevel, err := logrus.ParseLevel(strings.ToLower(viper.GetString("LOG_LEVEL")))
 	if err != nil {
-		logrus.Fatalf("Failed to parse tss public keys: %v", err)
+		logrus.Fatalf("Invalid log level: %v", err)
 	}
 
-	TssPublicKeys = tssPublicKeys
-}
-
-func setL2ChainId(chainId uint64) {
-	MasterChainId = big.NewInt(int64(chainId))
-}
-
-func setL2PrivateKey(pk string) {
-	privateKey, err := crypto.HexToECDSA(pk)
+	l2ChainId, err := strconv.ParseInt(viper.GetString("L2_CHAIN_ID"), 10, 64)
 	if err != nil {
-		logrus.Fatalf("Failed to load l2 private key: %v, given length %d", err, len(pk))
+		logrus.Fatalf("Failed to parse l2 chain id: %v", err)
 	}
 
-	SubmitterPrivateKey = privateKey
-}
+	relayerAddress, err := types.PrivateKeyToGoatAddress(viper.GetString("RELAYER_PRIVATE_KEY"), viper.GetString("GOATCHAIN_ACCOUNT_PREFIX"))
+	if err != nil {
+		log.Fatalf("Failed to parse goat address: %v, given private key length %d", err, len(viper.GetString("RELAYER_PRIVATE_KEY")))
+	}
 
-func setLogLevel() {
+	AppConfig = Config{
+		HTTPPort:               viper.GetString("HTTP_PORT"),
+		RPCPort:                viper.GetString("RPC_PORT"),
+		Libp2pPort:             viper.GetInt("LIBP2P_PORT"),
+		Libp2pBootNodes:        viper.GetString("LIBP2P_BOOT_NODES"),
+		BTCRPC:                 viper.GetString("BTC_RPC"),
+		BTCRPC_USER:            viper.GetString("BTC_RPC_USER"),
+		BTCRPC_PASS:            viper.GetString("BTC_RPC_PASS"),
+		BTCStartHeight:         viper.GetInt("BTC_START_HEIGHT"),
+		BTCReindexBlocks:       viper.GetString("BTC_REINDEX_BLOCKS"),
+		BTCConfirmations:       viper.GetInt("BTC_CONFIRMATIONS"),
+		BTCNetworkType:         viper.GetString("BTC_NETWORK_TYPE"),
+		BTCMaxNetworkFee:       viper.GetInt("BTC_MAX_NETWORK_FEE"),
+		ContractTaskManager:    viper.GetString("CONTRACT_TASK_MANAGER"),
+		L2RPC:                  viper.GetString("L2_RPC"),
+		L2JwtSecret:            viper.GetString("L2_JWT_SECRET"),
+		L2ChainId:              big.NewInt(l2ChainId),
+		L2StartHeight:          viper.GetInt("L2_START_HEIGHT"),
+		L2Confirmations:        viper.GetInt("L2_CONFIRMATIONS"),
+		L2MaxBlockRange:        viper.GetInt("L2_MAX_BLOCK_RANGE"),
+		L2RequestInterval:      viper.GetDuration("L2_REQUEST_INTERVAL"),
+		L2SubmitRetry:          viper.GetInt("L2_SUBMIT_RETRY"),
+		TssEndpoint:            viper.GetString("TSS_ENDPOINT"),
+		FireblocksSecret:       viper.GetString("FIREBLOCKS_SECRET"),
+		FireblocksCallbackPriv: viper.GetString("FIREBLOCKS_CALLBACK_PRIVATE"),
+		FireblocksCallbackPub:  viper.GetString("FIREBLOCKS_CALLBACK_PUBLIC"),
+		FireblocksApiKey:       viper.GetString("FIREBLOCKS_API_KEY"),
+		EnableWebhook:          viper.GetBool("ENABLE_WEBHOOK"),
+		EnableRelayer:          viper.GetBool("ENABLE_RELAYER"),
+		DbDir:                  viper.GetString("DB_DIR"),
+		LogLevel:               logLevel,
+		VotingContract:         viper.GetString("VOTING_CONTRACT"),
+		WithdrawContract:       viper.GetString("WITHDRAW_CONTRACT"),
+		GoatChainRPCURI:        viper.GetString("GOATCHAIN_RPC_URI"),
+		GoatChainGRPCURI:       viper.GetString("GOATCHAIN_GRPC_URI"),
+		GoatChainID:            viper.GetString("GOATCHAIN_ID"),
+		GoatChainAccountPrefix: viper.GetString("GOATCHAIN_ACCOUNT_PREFIX"),
+		GoatChainDenom:         viper.GetString("GOATCHAIN_DENOM"),
+		RelayerPriKey:          viper.GetString("RELAYER_PRIVATE_KEY"),
+		RelayerAddress:         relayerAddress,
+		RelayerBlsSk:           viper.GetString("RELAYER_BLS_SK"),
+		BlsSigTimeout:          viper.GetDuration("BLS_SIG_TIMEOUT"),
+		GigaWalletURL:          viper.GetString("GIGAWALLET_URL"),
+		GigaWalletAccountID:    viper.GetString("GIGAWALLET_ACCOUNT_ID"),
+		UseGigaWallet:          viper.GetBool("USE_GIGAWALLET"),
+	}
+
+	if (AppConfig.BTCNetworkType == "" || AppConfig.BTCNetworkType == "mainnet") && AppConfig.BTCConfirmations < 6 {
+		logrus.Warnf("BTC mainnet confirmations is too low, set to 6")
+		AppConfig.BTCConfirmations = 6
+	}
+
+	logrus.Infof("Init config, BlsSigTimeout %v, L2RequestInterval %v, RelayerAddress %s",
+		AppConfig.BlsSigTimeout, AppConfig.L2RequestInterval, AppConfig.RelayerAddress)
+
+	// logrus.SetFormatter(&logrus.JSONFormatter{})
 	logrus.SetOutput(os.Stdout)
-
-	logLvl, err := logrus.ParseLevel(AppConfig.Log.Level)
-	if err != nil {
-		logLvl = logrus.WarnLevel
-	}
-
-	logrus.SetLevel(logLvl)
-
-	if !AppConfig.IsProd() {
-		logrus.SetReportCaller(true)
-	}
+	logrus.SetLevel(AppConfig.LogLevel)
 }
 
-// ParseECDSAPublicKeys parses a comma-separated string of 132-character public keys with '0x' prefix
-// into an array of *ecdsa.PublicKey. It uses the secp256k1 elliptic curve.
-func ParseECDSAPublicKeys(publicKeyHexArray []string) ([]*ecdsa.PublicKey, error) {
-	publicKeys := make([]*ecdsa.PublicKey, len(publicKeyHexArray))
-
-	for i, keyHex := range publicKeyHexArray {
-		if len(keyHex) != 66 {
-			return nil, errors.New("invalid compressed public key length, expected 33 bytes")
-		}
-
-		pubBytes, err := hex.DecodeString(keyHex)
-		if err != nil {
-			return nil, errors.New("failed to decode public key hex: " + err.Error())
-		}
-
-		pubKey, err := crypto.DecompressPubkey(pubBytes)
-		if err != nil {
-			return nil, errors.New("failed to decompress public key: " + err.Error())
-		}
-
-		publicKeys[i] = pubKey
-	}
-
-	return publicKeys, nil
+type Config struct {
+	HTTPPort               string
+	RPCPort                string
+	Libp2pPort             int
+	Libp2pBootNodes        string
+	BTCRPC                 string
+	BTCRPC_USER            string
+	BTCRPC_PASS            string
+	BTCStartHeight         int
+	BTCConfirmations       int
+	BTCNetworkType         string
+	BTCMaxNetworkFee       int
+	BTCReindexBlocks       string
+	ContractTaskManager    string
+	L2RPC                  string
+	L2JwtSecret            string
+	L2ChainId              *big.Int
+	L2StartHeight          int
+	L2Confirmations        int
+	L2MaxBlockRange        int
+	L2RequestInterval      time.Duration
+	L2SubmitRetry          int
+	FireblocksSecret       string
+	FireblocksCallbackPriv string
+	FireblocksCallbackPub  string
+	FireblocksApiKey       string
+	TssEndpoint            string
+	EnableWebhook          bool
+	EnableRelayer          bool
+	DbDir                  string
+	LogLevel               logrus.Level
+	VotingContract         string
+	WithdrawContract       string
+	GoatChainRPCURI        string
+	GoatChainGRPCURI       string
+	GoatChainID            string
+	GoatChainAccountPrefix string
+	GoatChainDenom         string
+	RelayerPriKey          string
+	RelayerAddress         string
+	RelayerBlsSk           string
+	BlsSigTimeout          time.Duration
+	GigaWalletURL          string
+	GigaWalletAccountID    string
+	UseGigaWallet          bool
 }

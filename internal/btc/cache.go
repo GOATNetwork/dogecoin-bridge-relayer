@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/btcsuite/btcd/wire"
-	"github.com/nuvosphere/nudex-voter/internal/db"
-	log "github.com/sirupsen/logrus"
+	"github.com/goatnetwork/goat-relayer/internal/db"
 	"gorm.io/gorm"
+
+	"github.com/btcsuite/btcd/wire"
+	log "github.com/sirupsen/logrus"
 )
 
 type BTCCache struct {
@@ -71,13 +72,11 @@ func (bc *BTCCache) cacheBlockData(blockWithHeight BlockWithHeight) {
 	blockTime := header.Timestamp.Unix()
 
 	headerBuffer := new(bytes.Buffer)
-
 	err := header.Serialize(headerBuffer)
 	if err != nil {
 		log.Errorf("Failed to serialize block header: %v", err)
 		return
 	}
-
 	headerBytes := headerBuffer.Bytes()
 
 	txHashes, _ := block.TxHashes()
@@ -94,12 +93,11 @@ func (bc *BTCCache) cacheBlockData(blockWithHeight BlockWithHeight) {
 		TxHashes:     string(txHashesJSON),
 	}
 	bc.db.Save(&blockData)
-
 	for _, tx := range block.Transactions {
 		for _, txOut := range tx.TxOut {
 			txOutput := db.BtcTXOutput{
 				BlockID:  blockData.ID,
-				TxHash:   tx.TxHash().String(),
+				TxHash:   tx.TxID(),
 				Value:    uint64(txOut.Value),
 				PkScript: txOut.PkScript,
 			}

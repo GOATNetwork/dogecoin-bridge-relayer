@@ -3,8 +3,9 @@
 *.dll
 *.so
 *.dylib
-nudex-voter
-*.db
+$(BINARY_NAME)
+goat-relayer
+
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 

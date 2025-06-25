@@ -1,140 +1,268 @@
 package db
 
 import (
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
-	vtypes "github.com/nuvosphere/nudex-voter/internal/types"
-	"github.com/shopspring/decimal"
-	"gorm.io/gorm"
+	"time"
+
+	"github.com/goatnetwork/goat-relayer/internal/models"
+	log "github.com/sirupsen/logrus"
 )
 
-type LogIndex struct {
-	gorm.Model
-	Address     common.Address `gorm:"index;size:160"                json:"address"`
-	EventName   string         `json:"eventName"`                                         // event name
-	Log         *types.Log     `gorm:"serializer:json"               json:"log"`          // event content
-	TxHash      common.Hash    `gorm:"index;size:256"                json:"tx_hash"`      // tx hash
-	ChainId     uint64         `gorm:"index:log_index_unique,unique" json:"chain_id"`     // chainId
-	BlockNumber uint64         `gorm:"index:log_index_unique,unique" json:"block_number"` // block number of the tx
-	LogIndex    uint64         `gorm:"index:log_index_unique,unique" json:"log_index"`    // block log index
-	ForeignID   uint           `gorm:"index"                         json:"foreign_id"`   // task table ID;submitter table ID;participant_event table ID;...
+// L2SyncStatus model
+type L2SyncStatus struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	LastSyncBlock uint64    `gorm:"not null" json:"last_sync_block"`
+	UpdatedAt     time.Time `gorm:"not null" json:"updated_at"`
 }
 
-func (LogIndex) TableName() string {
-	return "log_index"
+// L2 Info model (only 1 record)
+type L2Info struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	Height           uint64    `gorm:"not null" json:"height"`
+	Syncing          bool      `gorm:"not null" json:"syncing"`
+	Threshold        string    `json:"threshold"`
+	DepositKey       string    `gorm:"not null" json:"deposit_key"` // type,pubKey
+	DepositMagic     []byte    `json:"deposit_magic"`
+	MinDepositAmount uint64    `json:"min_deposit_amount"`
+	StartBtcHeight   uint64    `gorm:"not null" json:"start_btc_height"`
+	LatestBtcHeight  uint64    `gorm:"not null" json:"latest_btc_height"`
+	UpdatedAt        time.Time `gorm:"not null" json:"updated_at"`
 }
 
-// Account save all accounts.
-type Account struct {
-	gorm.Model
-	UserAddress common.Address `gorm:"index;not null"        json:"user_address"`
-	Account     uint64         `gorm:"index;not null"        json:"account"`
-	Chain       uint8          `gorm:"not null"              json:"chain"`
-	Index       uint32         `gorm:"not null"              json:"index"`
-	Address     string         `gorm:"uniqueIndex; not null" json:"address"`
-	LogIndex    LogIndex       `gorm:"foreignKey:ForeignID"` // has one https://gorm.io/zh_CN/docs/has_one.html
+// L2 Deposit public key
+type DepositPubKey struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	BtcHeight uint64    `gorm:"not null" json:"btc_height"`
+	PubType   string    `gorm:"not null" json:"pub_type"`
+	PubKey    string    `gorm:"not null" json:"pub_key"`
+	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`
 }
 
-func (Account) TableName() string {
-	return "account"
+// Voter model
+type Voter struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	VoteAddr  string    `gorm:"not null" json:"vote_addr"`
+	VoteKey   string    `gorm:"not null" json:"vote_key"`
+	Sequence  uint64    `gorm:"not null" json:"sequence"`
+	Height    uint64    `gorm:"not null" json:"height"` // join block height
+	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`
 }
 
-type DepositRecord struct {
-	gorm.Model
-	UserAddress    common.Address  `gorm:"index;not null" json:"user_address"`
-	DepositAddress string          `gorm:"not null"       json:"deposit_address"`
-	Amount         decimal.Decimal `gorm:"not null"       json:"amount"`
-	ChainId        uint64          `gorm:"not null"       json:"chain_id"`
-	TxHash         string
-	BlockHeight    uint64
-	LogTxIndex     uint64
-	LogIndex       LogIndex `gorm:"foreignKey:ForeignID"` // has one https://gorm.io/zh_CN/docs/has_one.html
+// EpochVoter model (only 1 record)
+type EpochVoter struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	VoteAddrList string    `gorm:"not null" json:"vote_addr_list"`
+	VoteKeyList  string    `gorm:"not null" json:"vote_key_list"`
+	Epoch        uint64    `gorm:"not null" json:"epoch"`
+	Sequence     uint64    `gorm:"not null" json:"sequence"`
+	Height       uint64    `gorm:"not null" json:"height"`   // rotate block height
+	Proposer     string    `gorm:"not null" json:"proposer"` // proposer address
+	UpdatedAt    time.Time `gorm:"not null" json:"updated_at"`
 }
 
-func (DepositRecord) TableName() string {
-	return "deposit_record"
+// VoterQueue model (for adding/removing voters)
+type VoterQueue struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	VoteAddr  string    `gorm:"not null;index:voter_queue_vote_addr_index" json:"vote_addr"`
+	VoteKey   string    `gorm:"not null" json:"vote_key"`
+	Epoch     uint64    `gorm:"not null;index:voter_queue_epoch_index" json:"epoch"`
+	Action    string    `gorm:"not null" json:"action"` // "add" or "remove"
+	Status    string    `gorm:"not null" json:"status"` // "init", "pending", "processed"
+	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`
 }
 
-type WithdrawalRecord struct {
-	gorm.Model
-	ChainId        uint64          `gorm:"not null"             json:"chain_id"`
-	UserAddress    common.Address  `gorm:"index;not null"       json:"user_address"`
-	DepositAddress string          `gorm:"index;not null"       json:"deposit_address"`
-	ToAddress      string          `gorm:"index;not null"       json:"to_address"`
-	Amount         decimal.Decimal `gorm:"not null"             json:"amount"`
-	TxHash         string          `json:"tx_hash"`
-	LogIndex       LogIndex        `gorm:"foreignKey:ForeignID"` // has one https://gorm.io/zh_CN/docs/has_one.html
+// BtcBlock model
+type BtcBlock struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Height    uint64    `gorm:"not null;uniqueIndex" json:"height"`
+	Hash      string    `gorm:"not null" json:"hash"`
+	Status    string    `gorm:"not null;index:btc_block_status_index" json:"status"` // "unconfirm", "confirmed", "signing", "pending", "processed"
+	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`
 }
 
-func (WithdrawalRecord) TableName() string {
-	return "withdrawal_record"
+// Utxo model (wallet UTXO)
+type Utxo struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	Uid           string    `gorm:"not null" json:"uid"`
+	Txid          string    `gorm:"not null;index:unique_txid_out_index,unique" json:"txid"`
+	PkScript      []byte    `json:"pk_script"`
+	SubScript     []byte    `json:"sub_script"` // P2WSH Type
+	OutIndex      int       `gorm:"not null;index:unique_txid_out_index,unique" json:"out_index"`
+	Amount        int64     `gorm:"not null;index:utxo_amount_index" json:"amount"`     // BTC precision up to 8 decimal places
+	Receiver      string    `gorm:"not null;index:utxo_receiver_index" json:"receiver"` // it is MPC p2wpkh address here, or p2wsh (need collect)
+	WalletVersion string    `gorm:"not null" json:"wallet_vesion"`                      // MPC wallet version, it always sets to tss version, "fireblocks:1:2" = fireblocks workspace 1 account 2
+	Sender        string    `gorm:"not null" json:"sender"`
+	EvmAddr       string    `json:"evm_addr"`                      // deposit to L2
+	Source        string    `gorm:"not null" json:"source"`        // "deposit", "unknown"
+	ReceiverType  string    `gorm:"not null" json:"receiver_type"` // P2PKH P2SH P2WSH P2WPKH P2TR
+	Status        string    `gorm:"not null" json:"status"`        // "unconfirm", "confirmed", "processed", "pending (spend out)", "spent"
+	ReceiveBlock  uint64    `gorm:"not null" json:"receive_block"` // recieve at BTC block height
+	SpentBlock    uint64    `gorm:"not null" json:"spent_block"`   // spent at BTC block height
+	UpdatedAt     time.Time `gorm:"not null" json:"updated_at"`
 }
 
-type AddressBalance struct {
-	gorm.Model
-	ChainId uint64          `gorm:"not null"                            json:"chain_id"`
-	Address string          `gorm:"uniqueIndex:address_token; not null" json:"address"`
-	Token   string          `gorm:"uniqueIndex:address_token; not null" json:"token"`
-	Amount  decimal.Decimal `gorm:"not null"                            json:"amount"`
+// DepositResult model, it save deposit data from layer2 events
+type DepositResult struct {
+	ID                 uint   `gorm:"primaryKey" json:"id"`
+	Txid               string `gorm:"uniqueIndex:idx_txid_tx_out" json:"txid"`
+	TxOut              uint64 `gorm:"uniqueIndex:idx_txid_tx_out" json:"tx_out"`
+	Address            string `gorm:"not null" json:"address"`
+	Amount             uint64 `gorm:"not null" json:"amount"`
+	BlockHash          string `gorm:"not null" json:"block_hash"`
+	NeedFetchSubScript bool   `gorm:"not null;default:false;index:idx_need_fetch_sub_script" json:"need_fetch_sub_script"` // if true, need fetch sub script from BTC client, or fetch not exist utxo then save
 }
 
-func (AddressBalance) TableName() string {
-	return "address_balance"
+// SafeboxTask model, it save safebox task data from layer2 events
+type SafeboxTask struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	TaskId           uint64    `gorm:"not null;uniqueIndex:unique_task_id_idx,unique" json:"task_id"`
+	PartnerId        string    `gorm:"not null" json:"partner_id"`
+	DepositAddress   string    `gorm:"not null;index:deposit_address_idx" json:"deposit_address"`
+	TimelockEndTime  uint64    `gorm:"not null" json:"timelock_end_time"`
+	Deadline         uint64    `gorm:"not null" json:"deadline"`
+	Amount           uint64    `gorm:"not null" json:"amount"`
+	Pubkey           []byte    `json:"pubkey"`
+	WitnessScript    []byte    `json:"witness_script"`
+	TimelockAddress  string    `gorm:"not null;index:timelock_address_idx" json:"timelock_address"`
+	BtcAddress       string    `gorm:"not null" json:"btc_address"`
+	FundingTxid      string    `gorm:"not null;index:funding_txid_out_index" json:"funding_txid"`
+	FundingOutIndex  uint64    `gorm:"not null;index:funding_txid_out_index" json:"funding_out_index"`
+	TimelockTxid     string    `gorm:"not null;index:timelock_txid_out_index" json:"timelock_txid"`
+	TimelockOutIndex uint64    `gorm:"not null;index:timelock_txid_out_index" json:"timelock_out_index"`
+	Status           string    `gorm:"not null" json:"status"`
+	OrderId          string    `gorm:"index:safeboxtask_orderid_index" json:"order_id"` // update when signing, it always can be query from SendOrder by BTC txid
+	UpdatedAt        time.Time `gorm:"not null" json:"updated_at"`
 }
 
-type InscriptionMintb struct {
-	gorm.Model
-	Recipient string          `gorm:"not null"             json:"recipient"`
-	Ticker    vtypes.Byte32   `gorm:"not null"             json:"ticker"`
-	Amount    decimal.Decimal `gorm:"not null"             json:"amount"`
-	LogIndex  LogIndex        `gorm:"foreignKey:ForeignID"` // has one https://gorm.io/zh_CN/docs/has_one.html
+// Withdraw model (for managing withdrawals)
+type Withdraw struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	RequestId uint64    `gorm:"not null;uniqueIndex" json:"request_id"`
+	GoatBlock uint64    `gorm:"not null" json:"goat_block"`                            // Goat block height
+	Amount    uint64    `gorm:"not null;index:withdraw_amount_index" json:"amount"`    // withdraw BTC satoshis, build tx out should minus tx fee
+	TxPrice   uint64    `gorm:"not null;index:withdraw_txprice_index" json:"tx_price"` // Unit is satoshis
+	TxFee     uint64    `gorm:"not null" json:"tx_fee"`                                // will update when aggregating build
+	From      string    `gorm:"not null" json:"from"`
+	To        string    `gorm:"not null" json:"to"`                                    // BTC address, support all 4 types
+	Status    string    `gorm:"not null;index:withdraw_status_index" json:"status"`    // "create", "aggregating", "init", "signing", "pending", "unconfirm", "confirmed", "processed", "closed" - means user cancel
+	OrderId   string    `gorm:"not null;index:withdraw_orderid_index" json:"order_id"` // update when signing, it always can be query from SendOrder by BTC txid
+	Txid      string    `gorm:"not null;index:withdraw_txid_index" json:"txid"`        // update when signing
+	Reason    string    `gorm:"not null" json:"reason"`                                // reason for closed
+	CreatedAt time.Time `gorm:"not null" json:"created_at"`
+	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`
 }
 
-func (InscriptionMintb) TableName() string {
-	return "inscription_mintb"
+// SendOrder model (should send withdraw, vin, vout via off-chain consensus)
+type SendOrder struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	OrderId      string    `gorm:"not null;uniqueIndex" json:"order_id"`
+	Proposer     string    `gorm:"not null" json:"proposer"`
+	Pid          uint64    `gorm:"not null" json:"pid"`
+	Amount       uint64    `gorm:"not null" json:"amount"` // BTC precision up to 8 decimal places
+	TxPrice      uint64    `gorm:"not null;index:sendorder_txprice_index" json:"tx_price"`
+	Status       string    `gorm:"not null;index:sendorder_status_index" json:"status"`        // "aggregating", "init", "signing", "pending", "rbf-request", "unconfirm", "confirmed", "processed", "closed" - means not in use, should rollback withdraw, vin, vout
+	OrderType    string    `gorm:"not null;index:sendorder_ordertype_index" json:"order_type"` // "withdrawal", "consolidation"
+	BtcBlock     uint64    `gorm:"not null" json:"btc_block"`                                  // BTC block height
+	Txid         string    `gorm:"not null;index:sendorder_txid_index" json:"txid"`            // txid will update after signing status
+	NoWitnessTx  []byte    `json:"no_witness_tx"`                                              // no witness tx after tx build
+	TxFee        uint64    `gorm:"not null" json:"tx_fee"`                                     // the real tx fee will update after tx built
+	ExternalTxId string    `json:"external_tx_id"`                                             // fireblocks will return its special transaction id
+	UpdatedAt    time.Time `gorm:"not null" json:"updated_at"`
 }
 
-type InscriptionBurnb struct {
-	gorm.Model
-	From     string          `gorm:"not null"             json:"from"`
-	Ticker   vtypes.Byte32   `gorm:"not null"             json:"ticker"`
-	Amount   decimal.Decimal `gorm:"not null"             json:"amount"`
-	LogIndex LogIndex        `gorm:"foreignKey:ForeignID"` // has one https://gorm.io/zh_CN/docs/has_one.html
+// Vin model (sent transaction input)
+type Vin struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	OrderId      string    `gorm:"not null;index:vin_orderid_index" json:"order_id"`
+	BtcHeight    uint64    `gorm:"not null" json:"btc_height"`
+	Txid         string    `gorm:"not null;index:vin_txid_index" json:"txid"`
+	OutIndex     int       `gorm:"not null;index:vin_out_index" json:"out_index"`
+	SigScript    []byte    `json:"sig_script"`
+	SubScript    []byte    `json:"sub_script"` // P2WSH Type
+	Sender       string    `json:"sender"`
+	ReceiverType string    `gorm:"not null" json:"receiver_type"`                 // P2PKH P2SH P2WSH P2WPKH P2TR
+	Source       string    `gorm:"not null" json:"source"`                        // "withdraw", "unknown"
+	Status       string    `gorm:"not null;index:vin_status_index" json:"status"` // "aggregating", "init", "signing", "pending", "unconfirm", "confirmed", "processed", "closed"
+	UpdatedAt    time.Time `gorm:"not null" json:"updated_at"`
 }
 
-func (InscriptionBurnb) TableName() string {
-	return "inscription_burnb"
+// Vout model (sent transaction output)
+type Vout struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	OrderId    string    `gorm:"not null;index:vout_orderid_index" json:"order_id"`
+	BtcHeight  uint64    `gorm:"not null" json:"btc_height"`
+	Txid       string    `gorm:"not null;index:vout_txid_out_index" json:"txid"`
+	OutIndex   int       `gorm:"not null;index:vout_txid_out_index" json:"out_index"`
+	WithdrawId string    `json:"withdraw_id"`              // EvmTxId
+	Amount     int64     `gorm:"not null" json:"amount"`   // BTC precision up to 8 decimal places
+	Receiver   string    `gorm:"not null" json:"receiver"` // withdraw To
+	PkScript   []byte    `json:"pk_script"`
+	Sender     string    `json:"sender"`                                         // MPC address
+	Source     string    `gorm:"not null" json:"source"`                         // "withdraw", "unknown"
+	Status     string    `gorm:"not null;index:vout_status_index" json:"status"` // "aggregating", "init", "signing", "pending", "unconfirm", "confirmed", "processed", "closed"
+	UpdatedAt  time.Time `gorm:"not null" json:"updated_at"`
 }
 
-type Asset struct {
-	gorm.Model
-	Ticker            vtypes.Byte32 `gorm:"uniqueIndex;not null" json:"ticker"`
-	AssetType         uint8         `gorm:"not null"             json:"asset_type"`
-	Decimals          uint8         `gorm:"not null"             json:"decimals"`
-	DepositEnabled    bool          `gorm:"not null"             json:"deposit_enabled"`
-	WithdrawalEnabled bool          `gorm:"not null"             json:"withdrawal_enabled"`
-	MinDepositAmount  uint64        `gorm:"not null"             json:"min_deposit_amount"`
-	MinWithdrawAmount uint64        `gorm:"not null"             json:"min_withdraw_amount"`
-	AssetAlias        string        `gorm:"not null"             json:"asset_alias"`
-	AssetLogo         string        `gorm:"not null"             json:"asset_logo"`
+// BtcSyncStatus model
+type BtcSyncStatus struct {
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	UnconfirmHeight int64     `gorm:"not null" json:"unconfirm_height"`
+	ConfirmedHeight int64     `gorm:"not null" json:"confirmed_height"`
+	UpdatedAt       time.Time `gorm:"not null" json:"updated_at"`
 }
 
-func (Asset) TableName() string {
-	return "asset"
+type BtcBlockData struct {
+	ID           uint   `gorm:"primaryKey" json:"id"`
+	BlockHeight  uint64 `gorm:"unique;not null" json:"block_height"`
+	BlockHash    string `gorm:"unique;not null" json:"block_hash"`
+	Header       []byte `json:"header"`
+	Difficulty   uint32 `json:"difficulty"`
+	RandomNumber uint32 `json:"random_number"`
+	MerkleRoot   string `json:"merkle_root"`
+	BlockTime    int64  `json:"block_time"`
+	TxHashes     string `json:"tx_hashes"`
 }
 
-type TokenInfo struct {
-	gorm.Model
-	ChainId         uint64          `gorm:"index:chain_id_ticker_unique,unique" json:"chain_id"`
-	Ticker          vtypes.Byte32   `gorm:"index:chain_id_ticker_unique,unique" json:"ticker"`
-	IsActive        bool            `gorm:"not null"                            json:"is_active"`
-	AssetType       uint8           `gorm:"not null"                            json:"asset_type"`
-	Decimals        uint8           `gorm:"not null"                            json:"decimals"`
-	ContractAddress string          `gorm:"index;not null"                      json:"contract_address"`
-	Symbol          string          `gorm:"not null"                            json:"symbol"`
-	WithdrawFee     decimal.Decimal `gorm:"not null"                            json:"withdraw_fee"`
+type BtcTXOutput struct {
+	ID       uint   `gorm:"primaryKey" json:"id"`
+	BlockID  uint   `json:"block_data_id"`
+	TxHash   string `json:"tx_hash"`
+	Value    uint64 `json:"value"`
+	PkScript []byte `json:"pk_script"`
 }
 
-func (TokenInfo) TableName() string {
-	return "token_info"
+// Deposit model (for managing deposits)
+type Deposit struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	TxHash      string    `gorm:"not null;index:deposit_txhash_output_index" json:"tx_hash"`
+	Amount      int64     `gorm:"not null;default:0" json:"amount"`
+	RawTx       string    `gorm:"not null" json:"raw_tx"`
+	EvmAddr     string    `gorm:"not null" json:"evm_addr"`
+	BlockHash   string    `gorm:"not null;index:deposit_blockhash_index" json:"block_hash"`
+	BlockHeight uint64    `gorm:"not null;index:deposit_blockhash_height" json:"block_height"`
+	TxIndex     int       `gorm:"not null;index:deposit_txindex_index" json:"tx_index"`
+	OutputIndex int       `gorm:"not null;index:deposit_txhash_output_index" json:"output_index"`
+	MerkleRoot  []byte    `json:"merkle_root"`
+	Proof       []byte    `json:"proof"`
+	SignVersion uint32    `gorm:"not null" json:"sign_version"`
+	Status      string    `gorm:"not null;index:deposit_status_index" json:"status"` // "unconfirm", "confirmed", "signing", "pending", "processed"
+	CreatedAt   time.Time `gorm:"index:deposit_created_index" json:"created_at"`
+	UpdatedAt   time.Time `gorm:"not null" json:"updated_at"`
+}
+
+func (dm *DatabaseManager) autoMigrate() {
+	if err := dm.l2SyncDb.AutoMigrate(&L2SyncStatus{}); err != nil {
+		log.Fatalf("Failed to migrate database 1: %v", err)
+	}
+	if err := dm.l2InfoDb.AutoMigrate(&L2Info{}, &Voter{}, &EpochVoter{}, &VoterQueue{}, &DepositPubKey{}); err != nil {
+		log.Fatalf("Failed to migrate database 2: %v", err)
+	}
+	if err := dm.btcLightDb.AutoMigrate(&BtcBlock{}); err != nil {
+		log.Fatalf("Failed to migrate database 3: %v", err)
+	}
+	if err := dm.walletDb.AutoMigrate(&models.Utxo{}, &Withdraw{}, &SendOrder{}, &Vin{}, &Vout{}, &DepositResult{}, &SafeboxTask{}); err != nil {
+		log.Fatalf("Failed to migrate database 4: %v", err)
+	}
+	if err := dm.btcCacheDb.AutoMigrate(&BtcSyncStatus{}, &BtcBlockData{}, &BtcTXOutput{}, &Deposit{}); err != nil {
+		log.Fatalf("Failed to migrate database 5: %v", err)
+	}
 }

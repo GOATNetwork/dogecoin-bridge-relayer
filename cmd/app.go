@@ -2,102 +2,78 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
-	"github.com/nuvosphere/nudex-voter/internal/config"
-	"github.com/nuvosphere/nudex-voter/internal/db"
-	"github.com/nuvosphere/nudex-voter/internal/layer2"
-	"github.com/nuvosphere/nudex-voter/internal/p2p"
-	"github.com/nuvosphere/nudex-voter/internal/state"
-	"github.com/nuvosphere/nudex-voter/internal/tss"
-	"github.com/nuvosphere/nudex-voter/internal/types"
-	btcWallet "github.com/nuvosphere/nudex-voter/internal/wallet/btc"
-	_ "github.com/nuvosphere/nudex-voter/internal/wallet/dog"
-	"github.com/nuvosphere/nudex-voter/internal/wallet/evm"
-	"github.com/nuvosphere/nudex-voter/internal/wallet/solana"
-	"github.com/nuvosphere/nudex-voter/internal/wallet/sui"
-	"github.com/samber/lo"
-	"github.com/samber/lo/parallel"
+	"github.com/btcsuite/btcd/rpcclient"
+	"github.com/goatnetwork/goat-relayer/internal/bls"
+	"github.com/goatnetwork/goat-relayer/internal/btc"
+	"github.com/goatnetwork/goat-relayer/internal/config"
+	"github.com/goatnetwork/goat-relayer/internal/db"
+	"github.com/goatnetwork/goat-relayer/internal/http"
+	"github.com/goatnetwork/goat-relayer/internal/layer2"
+	"github.com/goatnetwork/goat-relayer/internal/p2p"
+	"github.com/goatnetwork/goat-relayer/internal/rpc"
+	"github.com/goatnetwork/goat-relayer/internal/safebox"
+	"github.com/goatnetwork/goat-relayer/internal/state"
+	"github.com/goatnetwork/goat-relayer/internal/voter"
+	"github.com/goatnetwork/goat-relayer/internal/wallet"
 	log "github.com/sirupsen/logrus"
 )
 
 type Application struct {
-	DatabaseManager *db.DatabaseManager
-	State           *state.State
-	modules         []Module
+	DatabaseManager  *db.DatabaseManager
+	State            *state.State
+	Signer           *bls.Signer
+	Layer2Listener   *layer2.Layer2Listener
+	HTTPServer       *http.HTTPServer
+	LibP2PService    *p2p.LibP2PService
+	BTCListener      *btc.BTCListener
+	UTXOService      *rpc.UtxoServer
+	WalletService    *wallet.WalletServer
+	VoterProcessor   *voter.VoterProcessor
+	SafeboxProcessor *safebox.SafeboxProcessor
 }
 
 func NewApplication() *Application {
+	config.InitConfig()
+	// create bitcoin client using btc module connection
+	connConfig := &rpcclient.ConnConfig{
+		Host:         config.AppConfig.BTCRPC,
+		User:         config.AppConfig.BTCRPC_USER,
+		Pass:         config.AppConfig.BTCRPC_PASS,
+		HTTPPostMode: true,
+		DisableTLS:   true,
+	}
+	btcClient, err := rpcclient.New(connConfig, nil)
+	if err != nil {
+		log.Fatalf("Failed to start bitcoin client: %v", err)
+	}
+
 	dbm := db.NewDatabaseManager()
-	stateDB := state.InitializeState(dbm)
-	libP2PService := p2p.NewLibP2PService(stateDB, config.SubmitterPrivateKey)
-	layer2Listener := layer2.NewLayer2Listener(libP2PService, stateDB.Bus(), dbm, config.AppConfig.MasterChainInfo())
-	// btcListener := btc.NewBTCListener(libP2PService, stateDB, dbm)
-	tssService := tss.NewTssService(libP2PService, dbm, stateDB.Bus(), layer2Listener)
-
-	moules := []Module{
-		layer2Listener,
-		libP2PService,
-		// btcListener,
-		tssService,
-	}
-
-	for _, chain := range config.AppConfig.Chains {
-		var module Module
-
-		log.Debugf("moudle chain : %v", chain)
-
-		switch chain.ChainType {
-		case types.ChainBitcoin:
-			module = btcWallet.NewWallet(
-				stateDB.Bus(),
-				tssService.TssService(),
-				state.NewContractState(dbm.GetContractDB()),
-				state.NewBtcWalletState(dbm.GetWalletDB(chain.ChainId), chain.ChainId),
-				layer2Listener,
-				&chain,
-			)
-		case types.ChainEthereum:
-			module = evm.NewWallet(
-				stateDB.Bus(),
-				tssService.TssService(),
-				layer2Listener,
-				state.NewContractState(dbm.GetContractDB()),
-				state.NewEvmWalletState(dbm.GetWalletDB(chain.ChainId)),
-				&chain,
-			)
-
-		case types.CoinTypeSOL:
-			module = solana.NewWallet(
-				stateDB.Bus(),
-				tssService.TssService(),
-				state.NewContractState(dbm.GetContractDB()),
-				state.NewSolWalletState(dbm.GetWalletDB(chain.ChainId)),
-				layer2Listener,
-			)
-
-		case types.ChainSui:
-			module = sui.NewWallet(
-				stateDB.Bus(),
-				tssService.TssService(),
-				state.NewContractState(dbm.GetContractDB()),
-				state.NewSuiWalletState(dbm.GetWalletDB(chain.ChainId)),
-				layer2Listener,
-			)
-		default:
-			panic(fmt.Sprintf("unknown chain type: %d", chain.ChainType))
-		}
-
-		moules = append(moules, module)
-	}
+	state := state.InitializeState(dbm)
+	libP2PService := p2p.NewLibP2PService(state)
+	layer2Listener := layer2.NewLayer2Listener(libP2PService, state, dbm)
+	signer := bls.NewSigner(libP2PService, layer2Listener, state, btcClient)
+	httpServer := http.NewHTTPServer(libP2PService, state, dbm)
+	btcListener := btc.NewBTCListener(libP2PService, state, dbm, btcClient)
+	utxoService := rpc.NewUtxoServer(state, layer2Listener)
+	walletService := wallet.NewWalletServer(libP2PService, state, signer, btcClient)
+	voterProcessor := voter.NewVoterProcessor(libP2PService, state, signer)
 
 	return &Application{
 		DatabaseManager: dbm,
-		State:           stateDB,
-		modules:         moules,
+		State:           state,
+		Signer:          signer,
+		Layer2Listener:  layer2Listener,
+		LibP2PService:   libP2PService,
+		HTTPServer:      httpServer,
+		BTCListener:     btcListener,
+		UTXOService:     utxoService,
+		WalletService:   walletService,
+		VoterProcessor:  voterProcessor,
 	}
 }
 
@@ -106,34 +82,70 @@ func (app *Application) Run() {
 	defer cancel()
 
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	go parallel.ForEach(app.modules, func(module Module, _ int) { module.Start(ctx) })
+	blockDoneCh := make(chan struct{})
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		app.Layer2Listener.Start(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		app.LibP2PService.Start(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		app.Signer.Start(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		app.HTTPServer.Start(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		app.BTCListener.Start(ctx, blockDoneCh)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		app.UTXOService.Start(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		app.WalletService.Start(ctx, blockDoneCh)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		app.VoterProcessor.Start(ctx)
+	}()
 
 	<-stop
 	log.Info("Receiving exit signal...")
+	close(blockDoneCh)
 
 	cancel()
-	lo.ForEach(app.modules, func(module Module, _ int) { module.Stop(ctx) })
 
-	app.State.Bus().Close()
+	wg.Wait()
 	log.Info("Server stopped")
 }
 
-func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-}
-
 func main() {
-	// app := NewApplication()
-	// app.Run()
-	Execute()
-}
-
-type Module interface {
-	Start(ctx context.Context)
-	Stop(ctx context.Context)
+	app := NewApplication()
+	app.Run()
 }

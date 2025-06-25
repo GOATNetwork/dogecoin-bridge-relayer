@@ -28,7 +28,6 @@ func DoubleSHA256Sum(data []byte) []byte {
 
 	h.Reset()
 	_, _ = h.Write(first)
-
 	return h.Sum(buf)
 }
 
@@ -37,14 +36,12 @@ func ComputeParentNode(left, right *chainhash.Hash) *chainhash.Hash {
 
 	parent := new(chainhash.Hash)
 	copy(parent[:], DoubleSHA256Sum(combined))
-
 	return parent
 }
 
 func cloneChainHash(h *chainhash.Hash) *chainhash.Hash {
 	res := new(chainhash.Hash)
 	copy(res[:], h[:])
-
 	return res
 }
 
@@ -85,7 +82,6 @@ func ComputeMerkleRootAndProof(txhs []*chainhash.Hash, txIndex int, proof *[]*ch
 	}
 
 	var newIndex int
-
 	parents := make([]*chainhash.Hash, 0, len(txhs)/2)
 	for i := 0; i < len(txhs); i += 2 {
 		parents = append(parents, ComputeParentNode(txhs[i], txhs[i+1]))
@@ -96,7 +92,6 @@ func ComputeMerkleRootAndProof(txhs []*chainhash.Hash, txIndex int, proof *[]*ch
 			} else {
 				*proof = append(*proof, cloneChainHash(txhs[i]))
 			}
-
 			newIndex = len(parents) - 1
 		}
 	}
@@ -110,21 +105,19 @@ func VerifyProof(txid, root *chainhash.Hash, txIndex int, path []*chainhash.Hash
 	}
 
 	current := cloneChainHash(txid)
-
 	for i := 0; i < len(path); i++ {
 		if txIndex&1 == 0 {
 			current = ComputeParentNode(current, path[i])
 		} else {
 			current = ComputeParentNode(path[i], current)
 		}
-
 		txIndex >>= 1
 	}
 
 	return current.IsEqual(root)
 }
 
-// proof = txid || intermediateNodes || merkleRoot.
+// proof = txid || intermediateNodes || merkleRoot
 func VerifyRawProof(proof []byte, index int) bool {
 	if len(proof)%32 != 0 {
 		return false
@@ -135,18 +128,15 @@ func VerifyRawProof(proof []byte, index int) bool {
 	}
 
 	current := proof[:32]
-
 	for i := 1; i < (len(proof)/32)-1; i++ {
 		start := i * 32
 		end := start + 32
-
 		next := proof[start:end]
 		if index&1 == 0 {
 			current = DoubleSHA256Sum(slices.Concat(current[:], next))
 		} else {
 			current = DoubleSHA256Sum(slices.Concat(next, current[:]))
 		}
-
 		index >>= 1
 	}
 

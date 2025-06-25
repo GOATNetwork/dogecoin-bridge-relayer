@@ -1,146 +1,72 @@
 package p2p
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
-	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/goatnetwork/goat-relayer/internal/state"
+	"github.com/goatnetwork/goat-relayer/internal/types"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/libp2p/go-libp2p/core/crypto/pb"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/nuvosphere/nudex-voter/internal/eventbus"
-	"github.com/nuvosphere/nudex-voter/internal/utils"
 	log "github.com/sirupsen/logrus"
 )
 
-var ErrHandshake = errors.New("hand shake error")
-
-func (lp *Service) handleReadHandshake(s network.Stream, self host.Host) (*HandshakeMessage, error) {
+func handleHandshake(s network.Stream, node host.Host) {
 	buf := make([]byte, 1024)
-
 	n, err := s.Read(buf)
 	if err != nil {
-		return nil, fmt.Errorf("error reading handshake message: %w", err)
+		log.Errorf("Error reading handshake message: %v", err)
+		return
 	}
 
 	handshakeMsg := buf[:n]
 	log.Infof("Received handshake message: %s", string(handshakeMsg))
 
-	handShake := HandshakeMessage{}
-	err = json.Unmarshal(handshakeMsg, &handShake)
-	utils.Assert(err)
-
-	remotePeerID := s.Conn().RemotePeer()
-	if handShake.Handshake != expectedHandshake || remotePeerID.String() != handShake.PeerID {
+	expectedMsg := []byte(expectedHandshake)
+	if !bytes.Equal(handshakeMsg, expectedMsg) {
 		log.Warn("Invalid handshake message received, closing connection")
+		s.Reset()
 
-		_ = s.Reset()
 		// disconnect peer
+		peerID := s.Conn().RemotePeer()
 		// s.Conn().Close()
-		err = self.Network().ClosePeer(remotePeerID)
-
-		return nil, errors.Join(err, ErrHandshake)
+		node.Network().ClosePeer(peerID)
+		return
 	}
 
-	return &handShake, nil
+	_, err = s.Write(handshakeMsg)
+	if err != nil {
+		log.Errorf("Error writing handshake response: %v", err)
+		return
+	}
+
+	log.Info("Handshake successful")
 }
 
-func (lp *Service) handleWriteHandshake(s network.Stream, self host.Host) error {
-	handshakeMsg := lp.handshakeMessage()
-
-	_, err := s.Write(handshakeMsg)
-	if err != nil {
-		return fmt.Errorf("error writing handshake message: %w", err)
-	}
-
-	return nil
-}
-
-// handleHandshake: echo.
-func (lp *Service) handleHandshake(s network.Stream, self host.Host) error {
-	remotePeerPublicKey, err := s.Conn().RemotePeer().ExtractPublicKey()
-	if err != nil {
-		return fmt.Errorf("error extracting public key: %w", err)
-	}
-
-	if remotePeerPublicKey.Type() != pb.KeyType_Secp256k1 {
-		return fmt.Errorf("%w: %s", ErrHandshake, remotePeerPublicKey.Type())
-	}
-
-	remotePeerStdPublicKey, err := crypto.PubKeyToStdKey(remotePeerPublicKey)
-	if err != nil {
-		return fmt.Errorf("error extracting std public key: %w", err)
-	}
-
-	secp256k1PublicKey := remotePeerStdPublicKey.(*crypto.Secp256k1PublicKey)
-
-	res, err := secp256k1PublicKey.Raw()
-	if err != nil {
-		return fmt.Errorf("error extracting secp256k1PublicKey: %w", err)
-	}
-
-	publicKey, err := ethCrypto.DecompressPubkey(res)
-	if err != nil {
-		return fmt.Errorf("error decompressing secp256k1PublicKey: %w", err)
-	}
-
-	remoteSubmitter := ethCrypto.PubkeyToAddress(*publicKey)
-
-	if !lp.IsPartner(remoteSubmitter) {
-		// todo
-		// return fmt.Errorf("%w: remoteSubmitter: %v", ErrHandshake, remoteSubmitter)
-		log.Errorf("%v: remoteSubmitter: %v", ErrHandshake, remoteSubmitter)
-	}
-
-	handShake, err := lp.handleReadHandshake(s, self)
-	if err != nil {
-		return err
-	}
-
-	err = lp.handleWriteHandshake(s, self)
-	if err != nil {
-		return err
-	}
-
-	id, err := peer.Decode(handShake.PeerID)
-	utils.Assert(err)
-	lp.addPeerInfo(id, handShake.Submitter)
-	log.Info("handleHandshake successful")
-
-	return nil
-}
-
-func (lp *Service) Bind(msgType MessageType, event eventbus.Event) {
-	lp.typeBindEvent.Store(msgType, event)
-}
-
-func (lp *Service) PublishMessage(ctx context.Context, msg any) error {
+func PublishMessage(ctx context.Context, msg any) error {
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
-		return errors.New("failed to marshal message")
+		log.Errorf("Failed to marshal message: %v", err)
+		return err
 	}
 
-	if lp.messageTopic == nil {
-		startTime := time.Now()
-		if time.Since(startTime) >= 10*time.Second {
-			return errors.New("message topic is nil, cannot publish message")
-		}
-
-		if lp.messageTopic == nil {
-			time.Sleep(1 * time.Second)
-		}
+	if messageTopic == nil {
+		log.Error("Message topic is nil, cannot publish message")
+		return fmt.Errorf("message topic is nil")
 	}
 
-	return lp.messageTopic.Publish(ctx, msgBytes)
+	if err := messageTopic.Publish(ctx, msgBytes); err != nil {
+		log.Errorf("Failed to publish message: %v", err)
+		return err
+	}
+	return nil
 }
 
-func (lp *Service) handlePubSubMessages(ctx context.Context, sub *pubsub.Subscription) {
+func (libp2p *LibP2PService) handlePubSubMessages(ctx context.Context, sub *pubsub.Subscription, node host.Host) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -153,7 +79,7 @@ func (lp *Service) handlePubSubMessages(ctx context.Context, sub *pubsub.Subscri
 				continue
 			}
 
-			if msg.ReceivedFrom == lp.selfPeerID {
+			if msg.ReceivedFrom == node.ID() {
 				log.Debug("Received message from self, ignore")
 				continue
 			}
@@ -164,24 +90,29 @@ func (lp *Service) handlePubSubMessages(ctx context.Context, sub *pubsub.Subscri
 				continue
 			}
 
-			dataStr := fmt.Sprintf("%v", receivedMsg.Data)
-			if len(dataStr) > 200 {
-				dataStr = dataStr[:200] + "..."
-			}
+			log.Debugf("Received message via pubsub: ID=%d, RequestId=%s, Data=%v", receivedMsg.MessageType, receivedMsg.RequestId, receivedMsg.Data)
 
-			log.Debugf("Received message via pubsub: ID=%d, RequestId=%s, Data=%v", receivedMsg.MessageType, receivedMsg.RequestId, dataStr)
-
-			event, ok := lp.typeBindEvent.Load(receivedMsg.MessageType)
-			if ok {
-				lp.state.Bus().Publish(event, receivedMsg)
-			} else {
+			switch receivedMsg.MessageType {
+			case MessageTypeSigReq:
+				libp2p.state.EventBus.Publish(state.SigReceive, convertMsgData(receivedMsg))
+			case MessageTypeSigResp:
+				libp2p.state.EventBus.Publish(state.SigReceive, convertMsgData(receivedMsg))
+			case MessageTypeDepositReceive:
+				libp2p.state.EventBus.Publish(state.DepositReceive, convertMsgData(receivedMsg))
+			case MessageTypeSendOrderBroadcasted:
+				libp2p.state.EventBus.Publish(state.SendOrderBroadcasted, convertMsgData(receivedMsg))
+			case MessageTypeNewVoter:
+				libp2p.state.EventBus.Publish(state.NewVoter, convertMsgData(receivedMsg))
+			case MessageTypeSafeboxTask:
+				libp2p.state.EventBus.Publish(state.SafeboxTask, convertMsgData(receivedMsg))
+			default:
 				log.Warnf("Unknown message type: %d", receivedMsg.MessageType)
 			}
 		}
 	}
 }
 
-func (lp *Service) handleHeartbeatMessages(ctx context.Context, sub *pubsub.Subscription) {
+func (libp2p *LibP2PService) handleHeartbeatMessages(ctx context.Context, sub *pubsub.Subscription, node host.Host) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -194,7 +125,7 @@ func (lp *Service) handleHeartbeatMessages(ctx context.Context, sub *pubsub.Subs
 				continue
 			}
 
-			if msg.ReceivedFrom == lp.selfPeerID {
+			if msg.ReceivedFrom == node.ID() {
 				log.Debug("Received heartbeat from self, ignore")
 				continue
 			}
@@ -205,19 +136,40 @@ func (lp *Service) handleHeartbeatMessages(ctx context.Context, sub *pubsub.Subs
 				continue
 			}
 
-			id, err := peer.Decode(hbMsg.PeerID)
-			if err != nil {
-				log.Errorf("Error decoding peer ID from heartbeat message: %v", err)
-				continue
-			}
-
-			lp.addPeerInfo(id, hbMsg.Message)
 			log.Infof("Received heartbeat from %d-%s: %s", hbMsg.Timestamp, hbMsg.PeerID, hbMsg.Message)
 		}
 	}
 }
 
-func (lp *Service) startHeartbeat(ctx context.Context, topic *pubsub.Topic) {
+func unmarshal[T any](data json.RawMessage) T {
+	var obj T
+	err := json.Unmarshal(data, &obj)
+	if err != nil || data == nil {
+		panic(fmt.Errorf("unmarshal data:%v, error: %w", data, err))
+	}
+	return obj
+}
+
+// convertMsgData converts the message data to the corresponding struct
+func convertMsgData(msg Message[json.RawMessage]) any {
+	switch msg.DataType {
+	case "MsgSignNewBlock":
+		return unmarshal[types.MsgSignNewBlock](msg.Data)
+	case "MsgUtxoDeposit":
+		return unmarshal[types.MsgUtxoDeposit](msg.Data)
+	case "MsgSignSendOrder":
+		return unmarshal[types.MsgSignSendOrder](msg.Data)
+	case "MsgSendOrderBroadcasted":
+		return unmarshal[types.MsgSendOrderBroadcasted](msg.Data)
+	case "MsgSignNewVoter":
+		return unmarshal[types.MsgSignNewVoter](msg.Data)
+	case "MsgSafeboxTask":
+		return unmarshal[types.MsgSignSafeboxTask](msg.Data)
+	}
+	return unmarshal[any](msg.Data)
+}
+
+func startHeartbeat(ctx context.Context, node host.Host, topic *pubsub.Topic) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -225,8 +177,8 @@ func (lp *Service) startHeartbeat(ctx context.Context, topic *pubsub.Topic) {
 		select {
 		case <-ticker.C:
 			hbMsg := HeartbeatMessage{
-				PeerID:    lp.selfPeerID.String(),
-				Message:   lp.localSubmitter.Hex(),
+				PeerID:    node.ID().String(),
+				Message:   "heartbeat",
 				Timestamp: time.Now().Unix(),
 			}
 

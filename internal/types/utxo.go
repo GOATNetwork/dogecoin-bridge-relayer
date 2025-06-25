@@ -2,17 +2,13 @@ package types
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/ethereum/go-ethereum/common"
@@ -29,7 +25,7 @@ const (
 	SMALL_UTXO_DEFINE = 50000000 // 0.5 BTC
 )
 
-// MsgUtxoDeposit defines deposit UTXO broadcast to p2p which received in relayer rpc.
+// MsgUtxoDeposit defines deposit UTXO broadcast to p2p which received in relayer rpc
 type MsgUtxoDeposit struct {
 	RawTx       string `json:"raw_tx"`
 	TxId        string `json:"tx_id"`
@@ -43,9 +39,14 @@ type MsgUtxoDeposit struct {
 type MsgSendOrderBroadcasted struct {
 	TxId         string `json:"tx_id"`
 	ExternalTxId string `json:"external_tx_id"`
+
+	SendOrder []byte `json:"send_order"`
+	Utxos     []byte `json:"utxos"`
+
+	WithdrawIds []uint64 `json:"withdraw_ids"`
 }
 
-// MsgUtxoWithdraw defines withdraw UTXO broadcast to p2p which received in relayer rpc.
+// MsgUtxoWithdraw defines withdraw UTXO broadcast to p2p which received in relayer rpc
 type MsgUtxoWithdraw struct {
 	TxId      string `json:"tx_id"`
 	EvmAddr   string `json:"evm_addr"`
@@ -84,28 +85,23 @@ func parseOpReturnGoatMagic(data []byte, magicBytes []byte) (common.Address, err
 	if len(data) < len(magicBytes)+1 {
 		return common.Address{}, fmt.Errorf("data is too short, expected at least %d bytes, got %d", len(magicBytes), len(data))
 	}
-
 	dataLen := uint32(data[0])
 	if dataLen != 24 {
 		return common.Address{}, fmt.Errorf("data length is not expected 24, got %d", dataLen)
 	}
-
 	data = data[1:]
 	// Check if the data starts with GOAT_MAGIC_BYTES
 	if !bytes.HasPrefix(data, magicBytes) {
 		return common.Address{}, errors.New("data does not start with magic bytes")
 	}
-
 	log.Debugf("Parsed OP_RETURN as GTT0: %v", data)
 	remainingBytes := data[len(magicBytes):]
 	// Check if the remaining bytes match the expected EVM address length (20 bytes)
 	if len(remainingBytes) != 20 {
 		return common.Address{}, fmt.Errorf("invalid data length for EVM address, expected 20 bytes, got %d", len(remainingBytes))
 	}
-
 	evmAddr := common.BytesToAddress(remainingBytes)
 	log.Debugf("Parsed OP_RETURN EVM address: %s", evmAddr.Hex())
-
 	return evmAddr, nil
 }
 
@@ -132,19 +128,15 @@ func IsUtxoGoatDepositV1(tx *wire.MsgTx, tssAddress []btcutil.Address, net *chai
 			// check if tx.TxOut[1] OP_RETURN rule: https://www.goat.network/docs/deposit/v1
 			// Process OP_RETURN to extract EVM address
 			data := tx.TxOut[1].PkScript[1:] // Assuming OP_RETURN opcode is at index 0
-
 			evmAddr, err := parseOpReturnGoatMagic(data, magicBytes)
 			if err != nil {
 				log.Debugf("Cannot parse OP_RETURN in TxOut[1]: %v", err)
 				return false, "", outIdxToAmount
 			}
-
 			outIdxToAmount[0] = tx.TxOut[0].Value
-
 			return true, evmAddr.Hex(), outIdxToAmount
 		}
 	}
-
 	return false, "", outIdxToAmount
 }
 
@@ -158,6 +150,7 @@ func IsUtxoGoatDepositV0(tx *wire.MsgTx, tssAddress []btcutil.Address, net *chai
 
 	// Extract addresses from tx.TxOut[0]
 	for idx, txOut := range tx.TxOut {
+
 		if isOpReturn(txOut) {
 			continue
 		}
@@ -223,7 +216,7 @@ func GetDustAmount(txPrice int64) int64 {
 func GetAddressType(addressStr string, net *chaincfg.Params) (string, error) {
 	address, err := btcutil.DecodeAddress(addressStr, net)
 	if err != nil {
-		return "", fmt.Errorf("invalid Bitcoin address: %w", err)
+		return "", fmt.Errorf("invalid Bitcoin address: %v", err)
 	}
 
 	switch address.(type) {
@@ -242,7 +235,7 @@ func GetAddressType(addressStr string, net *chaincfg.Params) (string, error) {
 	}
 }
 
-// TransactionSizeEstimate estimates the size of a transaction in bytes.
+// TransactionSizeEstimate estimates the size of a transaction in bytes
 func TransactionSizeEstimate(numInputs int, receiverTypes []string, numOutputs int, utxoTypes []string) int64 {
 	var totalSize int64 = 10 // Base transaction size (version, locktime, etc.)
 
@@ -286,41 +279,114 @@ func TransactionSizeEstimate(numInputs int, receiverTypes []string, numOutputs i
 	return totalSize
 }
 
-// Deserialize transaction.
+func TransactionSizeEstimateV2(numInputs int, receiverTypes []string, numOutputs int, utxoTypes []string) (float64, int64) {
+	// Base transaction overhead (version + locktime)
+	baseSize := int64(4 + 4) // version(4) + locktime(4)
+	witnessSize := int64(0)
+
+	// Calculate input sizes
+	baseSize += 1 // input count varint
+
+	// Calculate input sizes
+	for _, utxoType := range utxoTypes {
+		switch utxoType {
+		case WALLET_TYPE_P2WPKH:
+			// Base: txid(32) + vout(4) + script_len(1) + sequence(4) = 41
+			// Witness: items_count(1) + sig_len(1) + max_sig(72) + pubkey_len(1) + pubkey(33) = 108 or 107
+			baseSize += 41
+			// Use the maximum possible size for estimation
+			witnessSize += 108
+		case WALLET_TYPE_P2PKH:
+			// Legacy input: txid(32) + vout(4) + script_len(1) + script(107) + sequence(4) = 148
+			baseSize += 148
+		case WALLET_TYPE_P2WSH:
+			// Base: txid(32) + vout(4) + script_len(1) + sequence(4) = 41
+			baseSize += 41
+			// Witness (131 or 132 bytes):
+			//   - items_count: 1 byte
+			//   - sig_len: 1 byte
+			//   - max_signature: 72 bytes
+			//   - redeem_script_len: 1 byte
+			//   - redeem_script (57 bytes):
+			//     * evm_address_len: 1 byte
+			//     * evm_address: 20 bytes
+			//     * OP_DROP: 1 byte
+			//     * pubkey_len: 1 byte
+			//     * pubkey: 33 bytes
+			//     * OP_CHECKSIG: 1 byte
+			witnessSize += 132
+		case WALLET_TYPE_P2SH:
+			// Legacy P2SH input
+			baseSize += 296
+		case WALLET_TYPE_P2TR:
+			// Base: txid(32) + vout(4) + script_len(1) + sequence(4) = 41
+			baseSize += 41
+			witnessSize += 66
+		}
+	}
+
+	// Calculate output sizes
+	baseSize += 1 // output count varint
+	for _, receiverType := range receiverTypes {
+		switch receiverType {
+		case WALLET_TYPE_P2PKH:
+			baseSize += 34 // value(8) + script_len(1) + script(25)
+		case WALLET_TYPE_P2WPKH:
+			baseSize += 31 // value(8) + script_len(1) + script(22)
+		case WALLET_TYPE_P2SH:
+			baseSize += 32 // value(8) + script_len(1) + script(23)
+		case WALLET_TYPE_P2WSH:
+			baseSize += 43 // value(8) + script_len(1) + script(34)
+		case WALLET_TYPE_P2TR:
+			baseSize += 43 // value(8) + script_len(1) + script(34)
+		}
+	}
+
+	// Add change outputs (P2WPKH)
+	if len(receiverTypes) < numOutputs {
+		baseSize += int64(31 * (numOutputs - len(receiverTypes)))
+	}
+
+	// If there's any witness data, we need to add marker and flag bytes to witness
+	if witnessSize > 0 {
+		witnessSize += 2
+	}
+
+	// Virtual size = (base size * 4 + witness size) / 4
+	weight := baseSize*4 + witnessSize
+	virtualSize := float64(weight) / float64(4)
+
+	return virtualSize, witnessSize
+}
+
+// Deserialize transaction
 func DeserializeTransaction(data []byte) (*wire.MsgTx, error) {
 	var tx wire.MsgTx
-
 	buf := bytes.NewReader(data)
-
 	err := tx.Deserialize(buf)
 	if err != nil {
 		return nil, err
 	}
-
 	return &tx, nil
 }
 
-// Serialize transaction to bytes (with witness data).
+// Serialize transaction to bytes (with witness data)
 func SerializeTransaction(tx *wire.MsgTx) ([]byte, error) {
 	var buf bytes.Buffer
-
 	err := tx.Serialize(&buf)
 	if err != nil {
 		return nil, err
 	}
-
 	return buf.Bytes(), nil
 }
 
-// Serialize transaction to bytes (without witness data).
+// Serialize transaction to bytes (without witness data)
 func SerializeTransactionNoWitness(tx *wire.MsgTx) ([]byte, error) {
 	var buf bytes.Buffer
-
 	err := tx.SerializeNoWitness(&buf)
 	if err != nil {
 		return nil, err
 	}
-
 	return buf.Bytes(), nil
 }
 
@@ -333,260 +399,10 @@ func ConvertTxRawResultToMsgTx(txResult *btcjson.TxRawResult) (*wire.MsgTx, erro
 
 	// Deserialize the transaction
 	msgTx := wire.NewMsgTx(wire.TxVersion)
-
 	err = msgTx.Deserialize(bytes.NewReader(txBytes))
 	if err != nil {
 		return nil, err
 	}
 
 	return msgTx, nil
-}
-
-func IsTargetP2PKHAddress(script []byte, targetAddress btcutil.Address, net *chaincfg.Params) bool {
-	addressHash, err := btcutil.NewAddressPubKeyHash(script[3:23], net)
-	if err != nil {
-		return false
-	}
-
-	return addressHash.EncodeAddress() == targetAddress.EncodeAddress()
-}
-
-func IsTargetP2WPKHAddress(script []byte, targetAddress btcutil.Address, net *chaincfg.Params) bool {
-	// P2WPKH is 22 bytes (0x00 + 0x14 + 20 hash)
-	if len(script) != 22 || script[0] != 0x00 || script[1] != 0x14 {
-		return false
-	}
-
-	pubKeyHash := script[2:22]
-
-	address, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, net)
-	if err != nil {
-		return false
-	}
-
-	return address.EncodeAddress() == targetAddress.EncodeAddress()
-}
-
-func IsP2WSHAddress(script []byte, net *chaincfg.Params) (bool, string) {
-	// P2WSH is 34 bytes (0x00 + 0x20 + 32 hash)
-	if len(script) != 34 || script[0] != 0x00 || script[1] != 0x20 {
-		return false, ""
-	}
-
-	witnessHash := script[2:34]
-
-	address, err := btcutil.NewAddressWitnessScriptHash(witnessHash, net)
-	if err != nil {
-		return false, ""
-	}
-
-	return true, address.EncodeAddress()
-}
-
-func GenerateP2PKHAddress(pubKey []byte, net *chaincfg.Params) (*btcutil.AddressPubKeyHash, error) {
-	pubKeyHash := btcutil.Hash160(pubKey)
-
-	address, err := btcutil.NewAddressPubKeyHash(pubKeyHash, net)
-	if err != nil {
-		log.Errorf("Error generating P2PKH address: %v", err)
-		return nil, err
-	}
-
-	return address, nil
-}
-
-func GenerateP2WPKHAddress(pubKey []byte, net *chaincfg.Params) (*btcutil.AddressWitnessPubKeyHash, error) {
-	pubKeyHash := btcutil.Hash160(pubKey)
-
-	address, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, net)
-	if err != nil {
-		log.Errorf("Error generating P2WPKH address: %v", err)
-		return nil, err
-	}
-
-	return address, nil
-}
-
-func GenerateV0P2WSHAddress(pubKey []byte, evmAddress string, net *chaincfg.Params) (*btcutil.AddressWitnessScriptHash, error) {
-	subScript, err := BuildSubScriptForP2WSH(evmAddress, pubKey)
-	if err != nil {
-		return nil, err
-	}
-
-	witnessProg := sha256.Sum256(subScript)
-
-	p2wsh, err := btcutil.NewAddressWitnessScriptHash(witnessProg[:], net)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create v0 p2wsh address: %w", err)
-	}
-
-	return p2wsh, nil
-}
-
-func GenerateSPVProof(txHash string, txHashes []string) ([]byte, []byte, int, error) {
-	// Find the transaction's position in the block
-	txIndex := -1
-
-	for i, hash := range txHashes {
-		if hash == txHash {
-			txIndex = i
-			break
-		}
-	}
-
-	if txIndex == -1 {
-		return nil, nil, -1, fmt.Errorf("transaction hash not found in block, expected txid: %s, found txhashes: %s", txHash, txHashes)
-	}
-
-	// Generate merkle root and proof
-	txHashesPtrs := make([]*chainhash.Hash, len(txHashes))
-
-	for i, hashStr := range txHashes {
-		hash, err := chainhash.NewHashFromStr(hashStr)
-		if err != nil {
-			return nil, nil, -1, fmt.Errorf("failed to parse transaction hash: %w", err)
-		}
-
-		txHashesPtrs[i] = hash
-	}
-
-	var proof []*chainhash.Hash
-	merkleRoot := ComputeMerkleRootAndProof(txHashesPtrs, txIndex, &proof)
-
-	// Serialize immediate proof
-	var buf bytes.Buffer
-	for _, p := range proof {
-		buf.Write(p[:])
-	}
-
-	return merkleRoot.CloneBytes(), buf.Bytes(), txIndex, nil
-}
-
-func VerifyBlockSPV(btcBlock BtcBlockExt) error {
-	// get merkle root from header
-	expectedMerkleRoot := btcBlock.Header.MerkleRoot
-
-	// generate actual merkle root from transactions
-	txHashes := make([]*chainhash.Hash, 0, len(btcBlock.Transactions))
-
-	for _, tx := range btcBlock.Transactions {
-		txHash := tx.TxHash()
-		txHashes = append(txHashes, &txHash)
-	}
-
-	actualMerkleRoot := buildMerkleRoot(txHashes)
-
-	// check merkle root is match
-	if !actualMerkleRoot.IsEqual(&expectedMerkleRoot) {
-		return fmt.Errorf("merkle root mismatch: expected %s, got %s",
-			expectedMerkleRoot, actualMerkleRoot)
-	}
-
-	// check header hash is match
-	headerHash := btcBlock.Header.BlockHash()
-	blockHash := btcBlock.BlockHash()
-
-	if !headerHash.IsEqual(&blockHash) {
-		return fmt.Errorf("block hash mismatch: expected %s, got %s", blockHash, headerHash)
-	}
-
-	log.Infof("Block %d SPV verification successful: Merkle root and block hash match", btcBlock.BlockNumber)
-
-	return nil
-}
-
-// buildMerkleRoot builds the Merkle tree and returns the root hash.
-func buildMerkleRoot(txHashes []*chainhash.Hash) *chainhash.Hash {
-	if len(txHashes) == 0 {
-		return nil
-	}
-
-	// Merkle Root calculation loop
-	for len(txHashes) > 1 {
-		var newLevel []*chainhash.Hash
-
-		// combine hashes two by two
-		for i := 0; i < len(txHashes); i += 2 {
-			var combined []byte
-			if i+1 < len(txHashes) {
-				// normal case: combine two by two
-				combined = append(txHashes[i][:], txHashes[i+1][:]...)
-			} else {
-				// odd case: duplicate the last transaction hash
-				combined = append(txHashes[i][:], txHashes[i][:]...)
-			}
-
-			newHash := chainhash.DoubleHashH(combined)
-			newLevel = append(newLevel, &newHash)
-		}
-
-		// prepare for the next level
-		txHashes = newLevel
-	}
-
-	// return the final root hash
-	return txHashes[0]
-}
-
-func SerializeNoWitnessTx(rawTransaction []byte) ([]byte, error) {
-	// Parse the raw transaction
-	rawTx := wire.NewMsgTx(wire.TxVersion)
-
-	err := rawTx.Deserialize(bytes.NewReader(rawTransaction))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse raw transaction: %w", err)
-	}
-
-	// Create a new transaction without witness data
-	noWitnessTx := wire.NewMsgTx(rawTx.Version)
-
-	// Copy transaction inputs, excluding witness data
-	for _, txIn := range rawTx.TxIn {
-		newTxIn := wire.NewTxIn(&txIn.PreviousOutPoint, nil, nil)
-		newTxIn.Sequence = txIn.Sequence
-		noWitnessTx.AddTxIn(newTxIn)
-	}
-
-	// Copy transaction outputs
-	for _, txOut := range rawTx.TxOut {
-		noWitnessTx.AddTxOut(txOut)
-	}
-
-	// Set lock time
-	noWitnessTx.LockTime = rawTx.LockTime
-
-	// Serialize the transaction without witness data
-	var buf bytes.Buffer
-
-	err = noWitnessTx.Serialize(&buf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize transaction without witness data: %w", err)
-	}
-
-	return buf.Bytes(), nil
-}
-
-func BuildSubScriptForP2WSH(evmAddress string, pubKey []byte) ([]byte, error) {
-	posPubkey, err := btcec.ParsePubKey(pubKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse public key: %w", err)
-	}
-
-	evmAddress = strings.TrimPrefix(evmAddress, "0x")
-
-	addr, err := hex.DecodeString(evmAddress)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode evmAddress: %w", err)
-	}
-
-	subScript, err := txscript.NewScriptBuilder().
-		AddData(addr).
-		AddOp(txscript.OP_DROP).
-		AddData(posPubkey.SerializeCompressed()).
-		AddOp(txscript.OP_CHECKSIG).Script()
-	if err != nil {
-		return nil, fmt.Errorf("failed to build subscript: %w", err)
-	}
-
-	return subScript, nil
 }

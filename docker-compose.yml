@@ -1,54 +1,40 @@
 services:
-  nudex-voter-1:
+  goat-relayer-1:
     build: .
-    image: nuvosphere/nudex-voter:latest
-    container_name: nudex-voter-1
+    image: goatnetwork/goat-relayer:latest
+    container_name: goat-relayer-1
     env_file:
-      - .env1
+      - .env
     ports:
       - "8080:8080"
+      - "50051:50051"
       - "4001:4001"
     volumes:
-      - ./data/db1:/app/db
+      - ./data/db:/app/db
     networks:
-      nudex-network:
-        ipv4_address: 192.168.100.2
+      goat-network:
+        ipv4_address: 192.168.10.2
 
-  nudex-voter-2:
-    image: nuvosphere/nudex-voter:latest
-    container_name: nudex-voter-2
+  goat-relayer-2:
+    image: goatnetwork/goat-relayer:latest
+    container_name: goat-relayer-2
     env_file:
-      - .env2
+      - .env
     environment:
-      - LIBP2P_BOOT_NODES=/ip4/192.168.100.2/tcp/4001/p2p/12D3KooWH3iZegCM3dYC46BgahT9VXVNn89sX5GKwmj8rwPPzjRz
+      - LIBP2P_BOOT_NODES=/ip4/192.168.10.2/tcp/4001/p2p/12D3KooWPxRKQ8mrJspeyppXDbh8SdXq27jVD9p1CmVdi8nmPnq6
     ports:
       - "8180:8080"
+      - "51051:50051"
       - "4101:4001"
     volumes:
       - ./data/db2:/app/db
     networks:
-      nudex-network:
-        ipv4_address: 192.168.100.3
-
-  nudex-voter-3:
-    image: nuvosphere/nudex-voter:latest
-    container_name: nudex-voter-3
-    env_file:
-      - .env3
-    environment:
-      - LIBP2P_BOOT_NODES=/ip4/192.168.100.3/tcp/4001/p2p/12D3KooWMiaYtZ56PMmXtVhngYNwGM9Le27pEun8x1DbdgEzUdpk
-    ports:
-      - "8280:8080"
-      - "4201:4001"
-    volumes:
-      - ./data/db3:/app/db
-    networks:
-      nudex-network:
-        ipv4_address: 192.168.100.4
+      goat-network:
+        ipv4_address: 192.168.10.3
 
 networks:
-  nudex-network:
+  goat-network:
     driver: bridge
     ipam:
       config:
-        - subnet: 192.168.100.0/24
+        - subnet: 192.168.10.0/24
